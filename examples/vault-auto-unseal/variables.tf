@@ -20,19 +20,14 @@ variable "ssh_key_name" {
   description = "The name of an EC2 Key Pair that can be used to SSH to the EC2 Instances in this cluster. Set to an empty string to not associate a Key Pair."
 }
 
-variable "example_secret" {
-  description = "Example secret to be written into vault server"
+variable "auto_unseal_kms_key_alias" {
+  description = "The alias of AWS KMS key used for encryption and decryption"
 }
 
 # ---------------------------------------------------------------------------------------------------------------------
 # OPTIONAL PARAMETERS
 # These parameters have reasonable defaults.
 # ---------------------------------------------------------------------------------------------------------------------
-
-variable "example_role_name" {
-  description = "The name of the vault role"
-  default     = "example-role"
-}
 
 variable "vault_cluster_name" {
   description = "What to name the Vault server cluster and all of its associated resources"
@@ -51,12 +46,12 @@ variable "auth_server_name" {
 
 variable "vault_cluster_size" {
   description = "The number of Vault server nodes to deploy. We strongly recommend using 3 or 5."
-  default     = 1
+  default     = 3
 }
 
 variable "consul_cluster_size" {
   description = "The number of Consul server nodes to deploy. We strongly recommend using 3 or 5."
-  default     = 1
+  default     = 3
 }
 
 variable "vault_instance_type" {

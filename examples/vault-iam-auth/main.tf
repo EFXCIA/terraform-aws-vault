@@ -7,6 +7,9 @@ terraform {
   required_version = ">= 0.11.0"
 }
 
+# ---------------------------------------------------------------------------------------------------------------------
+# INSTANCE THAT WILL AUTHENTICATE TO VAULT USING IAM METHOD
+# ---------------------------------------------------------------------------------------------------------------------
 resource "aws_instance" "example_auth_to_vault" {
   ami           = "${var.ami_id}"
   instance_type = "t2.micro"
@@ -28,17 +31,44 @@ resource "aws_instance" "example_auth_to_vault" {
   }
 }
 
-# Using the same role as vault because it has consul_iam_policies_servers,
-# Which allows DescribeTags and enables this instance to connect to find and reach consul server
-# access the DNS registry for the vault server
+# ---------------------------------------------------------------------------------------------------------------------
+# CREATES A ROLE THAT IS ATTACHED TO THE INSTANCE
+# The arn of this AWS role is what the Vault server will use create the Vault Role
+# so it can validate login requests from resources with this role
+# ---------------------------------------------------------------------------------------------------------------------
 resource "aws_iam_instance_profile" "example_instance_profile" {
   path = "/"
-  role = "${module.vault_cluster.iam_role_name}"
+  role = "${aws_iam_role.example_instance_role.name}"
+}
+
+resource "aws_iam_role" "example_instance_role" {
+  name_prefix        = "${var.auth_server_name}-role"
+  assume_role_policy = "${data.aws_iam_policy_document.example_instance_role.json}"
+}
+
+data "aws_iam_policy_document" "example_instance_role" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRole"]
+
+    principals {
+      type        = "Service"
+      identifiers = ["ec2.amazonaws.com"]
+    }
+  }
+}
+
+# Adds policies necessary for running consul
+module "consul_iam_policies_for_client" {
+  source = "github.com/hashicorp/terraform-aws-consul.git//modules/consul-iam-policies?ref=v0.4.0"
+
+  iam_role_id = "${aws_iam_role.example_instance_role.id}"
 }
 
 # ---------------------------------------------------------------------------------------------------------------------
 # THE USER DATA SCRIPT THAT WILL RUN ON THE INSTANCE
 # This script will run consul, which is used for discovering vault cluster
+# And perform the login operation
 # ---------------------------------------------------------------------------------------------------------------------
 
 data "template_file" "user_data_auth_client" {
@@ -53,6 +83,7 @@ data "template_file" "user_data_auth_client" {
 
 # ---------------------------------------------------------------------------------------------------------------------
 # ADDS A RULE TO OPEN PORT 8080 SINCE OUR EXAMPLE LAUNCHES A SIMPLE WEB SERVER
+# This is here just for automated tests, not something that should be done with prod
 # ---------------------------------------------------------------------------------------------------------------------
 
 resource "aws_security_group" "auth_instance" {
@@ -69,6 +100,36 @@ resource "aws_security_group_rule" "allow_inbound_api" {
   cidr_blocks = ["0.0.0.0/0"]
 
   security_group_id = "${aws_security_group.auth_instance.id}"
+}
+
+# ---------------------------------------------------------------------------------------------------------------------
+# ADDS A POLICY TO THE VAULT CLUSTER ROLE SO VAULT CAN QUERY AWS IAM USERS AND ROLES
+# ---------------------------------------------------------------------------------------------------------------------
+
+resource "aws_iam_role_policy" "vault_iam" {
+  name   = "vault_iam"
+  role   = "${module.vault_cluster.iam_role_id}"
+  policy = "${data.aws_iam_policy_document.vault_iam.json}"
+}
+
+data "aws_iam_policy_document" "vault_iam" {
+  statement {
+    effect  = "Allow"
+    actions = ["iam:GetRole", "iam:GetUser"]
+
+    # List of arns it can query, for more security, it could be set to specific roles or user
+    # resources = ["${aws_iam_role.example_instance_role.arn}"]
+    resources = [
+      "arn:aws:iam::*:user/*",
+      "arn:aws:iam::*:role/*",
+    ]
+  }
+
+  statement {
+    effect    = "Allow"
+    actions   = ["sts:GetCallerIdentity"]
+    resources = ["*"]
+  }
 }
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -122,14 +183,15 @@ data "template_file" "user_data_vault_cluster" {
   template = "${file("${path.module}/user-data-vault.sh")}"
 
   vars {
-    aws_region               = "${data.aws_region.current.name}"
     consul_cluster_tag_key   = "${var.consul_cluster_tag_key}"
     consul_cluster_tag_value = "${var.consul_cluster_name}"
     example_role_name        = "${var.example_role_name}"
+
     # Please note that normally we would never pass a secret this way
     # This is just for test purposes so we can verify that our example instance is authenticating correctly
-    example_secret           = "${var.example_secret}"
-    ami_id                   = "${var.ami_id}"
+    example_secret = "${var.example_secret}"
+
+    aws_iam_role_arn = "${aws_iam_role.example_instance_role.arn}"
   }
 }
 

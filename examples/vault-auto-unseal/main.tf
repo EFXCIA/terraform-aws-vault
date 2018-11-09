@@ -7,68 +7,8 @@ terraform {
   required_version = ">= 0.11.0"
 }
 
-resource "aws_instance" "example_auth_to_vault" {
-  ami           = "${var.ami_id}"
-  instance_type = "t2.micro"
-  subnet_id     = "${data.aws_subnet_ids.default.ids[0]}"
-  key_name      = "${var.ssh_key_name}"
-
-  # Security group that opens the necessary ports for consul
-  # And security group that opens the port to our simple web server
-  security_groups = [
-    "${module.consul_cluster.security_group_id}",
-    "${aws_security_group.auth_instance.id}",
-  ]
-
-  user_data            = "${data.template_file.user_data_auth_client.rendered}"
-  iam_instance_profile = "${aws_iam_instance_profile.example_instance_profile.name}"
-
-  tags {
-    Name = "${var.auth_server_name}"
-  }
-}
-
-# Using the same role as vault because it has consul_iam_policies_servers,
-# Which allows DescribeTags and enables this instance to connect to find and reach consul server
-# access the DNS registry for the vault server
-resource "aws_iam_instance_profile" "example_instance_profile" {
-  path = "/"
-  role = "${module.vault_cluster.iam_role_name}"
-}
-
-# ---------------------------------------------------------------------------------------------------------------------
-# THE USER DATA SCRIPT THAT WILL RUN ON THE INSTANCE
-# This script will run consul, which is used for discovering vault cluster
-# ---------------------------------------------------------------------------------------------------------------------
-
-data "template_file" "user_data_auth_client" {
-  template = "${file("${path.module}/user-data-auth-client.sh")}"
-
-  vars {
-    consul_cluster_tag_key   = "${var.consul_cluster_tag_key}"
-    consul_cluster_tag_value = "${var.consul_cluster_name}"
-    example_role_name        = "${var.example_role_name}"
-  }
-}
-
-# ---------------------------------------------------------------------------------------------------------------------
-# ADDS A RULE TO OPEN PORT 8080 SINCE OUR EXAMPLE LAUNCHES A SIMPLE WEB SERVER
-# ---------------------------------------------------------------------------------------------------------------------
-
-resource "aws_security_group" "auth_instance" {
-  name        = "${var.auth_server_name}"
-  description = "Security group for ${var.auth_server_name}"
-  vpc_id      = "${data.aws_vpc.default.id}"
-}
-
-resource "aws_security_group_rule" "allow_inbound_api" {
-  type        = "ingress"
-  from_port   = "8080"
-  to_port     = "8080"
-  protocol    = "tcp"
-  cidr_blocks = ["0.0.0.0/0"]
-
-  security_group_id = "${aws_security_group.auth_instance.id}"
+data "aws_kms_alias" "vault-example" {
+  name = "alias/${var.auto_unseal_kms_key_alias}"
 }
 
 # ---------------------------------------------------------------------------------------------------------------------
@@ -90,6 +30,11 @@ module "vault_cluster" {
 
   vpc_id     = "${data.aws_vpc.default.id}"
   subnet_ids = "${data.aws_subnet_ids.default.ids}"
+
+  # This setting will create the AWS policy that allows the vault cluster to
+  # access KMS and use this key for encryption and decryption
+  enable_auto_unseal = true
+  auto_unseal_kms_key_arn = "${data.aws_kms_alias.vault-example.target_key_arn}"
 
   # To make testing easier, we allow requests from any IP address here but in a production deployment, we *strongly*
   # recommend you limit this to the IP address ranges of known, trusted servers inside your VPC.
@@ -122,14 +67,11 @@ data "template_file" "user_data_vault_cluster" {
   template = "${file("${path.module}/user-data-vault.sh")}"
 
   vars {
-    aws_region               = "${data.aws_region.current.name}"
     consul_cluster_tag_key   = "${var.consul_cluster_tag_key}"
     consul_cluster_tag_value = "${var.consul_cluster_name}"
-    example_role_name        = "${var.example_role_name}"
-    # Please note that normally we would never pass a secret this way
-    # This is just for test purposes so we can verify that our example instance is authenticating correctly
-    example_secret           = "${var.example_secret}"
-    ami_id                   = "${var.ami_id}"
+
+    kms_key_id                   = "${data.aws_kms_alias.vault-example.target_key_id}"
+    aws_region                   = "${data.aws_region.current.name}"
   }
 }
 
